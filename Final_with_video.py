@@ -2,7 +2,7 @@ import argparse
 import moviepy.editor as mp
 import numpy as np
 import librosa
-from scipy.signal import find_peaks, savgol_filter
+from scipy.signal import butter, lfilter, find_peaks, savgol_filter
 from scipy.interpolate import interp1d
 import json
 import cv2
@@ -68,8 +68,6 @@ def parse_arguments():
     # Parsing the Arguments from cmd line arguments
     parser = argparse.ArgumentParser(description='Audio-Video Synchronization')
     parser.add_argument('--audio', type=str, required=True, help='Path to the audio file')
-    parser.add_argument('--token', type=str, required=True, help='Path to the audio file')
-    parser.add_argument('--domain', type=str, required=True, help='Path to the audio file')
     parser.add_argument('--image', type=str, required=True, help='Path to the video file')
     parser.add_argument('--mode', choices=['bass', 'treble', 'mid', 'hpss'], required=True, help='Audio analysis mode: bass, treble, mid, hpss')
     parser.add_argument('--range', type=int, default=15, help='Window length for smoothing RMS')
@@ -77,31 +75,37 @@ def parse_arguments():
 
 
 ####### --------------------------------  GENERATE RMS DATA WITH ANALYSIS TYPE -------------------------------- ####### 
+def butter_lowpass(cutoff, fs, order=5):
+    nyquist = 0.5 * fs
+    normal_cutoff = cutoff / nyquist
+    b, a = butter(order, normal_cutoff, btype='low', analog=False)
+    return b, a
+
+def apply_lowpass_filter(data, cutoff, fs, order=5):
+    b, a = butter_lowpass(cutoff, fs, order=order)
+    y = lfilter(b, a, data)
+    return y
+
 def analyze_audio_component(y, sr, mode):
     if mode == 'bass':
-        # Implement bass analysis (e.g., low-pass filtering)
-        y_analysis = librosa.effects.lowpass(y, cutoff=200)  # Adjust cutoff frequency as needed
-
+        cutoff_freq = 200
+        y_analysis = apply_lowpass_filter(y, cutoff_freq, sr)
     elif mode == 'treble':
-        # Implement treble analysis (e.g., high-pass filtering)
-        y_analysis = librosa.effects.highpass(y, cutoff=4000)  # Adjust cutoff frequency as needed
-
+        cutoff_freq = 4000
+        y_analysis = librosa.effects.harmonic(y=y)  # Using harmonic component for treble
     elif mode == 'mid':
-        # Implement mid analysis (e.g., band-pass filtering)
-        y_analysis = librosa.effects.bandpass(y, fmin=200, fmax=4000)  # Adjust frequency range as needed
-
+        cutoff_freq = [200, 4000]
+        y_analysis = librosa.effects.bandpass(y, cutoff_freq[0], cutoff_freq[1], sr=sr)
     elif mode == 'hpss':
-        # Harmonic-Percussive Source Separation
         y_harmonic, y_percussive = librosa.effects.hpss(y)
-        y_analysis = y_harmonic  # Example: use harmonic component for analysis
-
+        y_analysis = y_harmonic + y_percussive  # Combining both harmonic and percussive components
     else:
         raise ValueError(f'Unsupported mode: {mode}')
 
     return y_analysis
 
 
-def main():
+def render_video():
     # Handling exceptions when missing or invalid arguments
     try:
         args = parse_arguments()
@@ -253,6 +257,6 @@ def main():
 
 if __name__ == '__main__':
     try:
-        main()
+        render_video()
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
