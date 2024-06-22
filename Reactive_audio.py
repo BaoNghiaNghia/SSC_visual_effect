@@ -1,7 +1,9 @@
 import gc
 import os
+import sys
 import cv2
 import json
+import shutil
 import mimetypes
 import numpy as np
 import argparse
@@ -19,15 +21,36 @@ import threading
 # Initialize logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# Get the moviepy logger
+moviepy_logger = logging.getLogger('moviepy')
+
+# Set the logging level to CRITICAL to suppress all logs
+moviepy_logger.setLevel(logging.CRITICAL)
+
+# Remove all handlers from the moviepy logger
+while moviepy_logger.handlers:
+    moviepy_logger.removeHandler(moviepy_logger.handlers[0])
+
+
 # Global stop event
 stop_event = threading.Event()
 
 DEFAULT_FRAME_FPS = 30
+
+SMALLEST_ZOOM_SIZE=1.05
+
+# Process frames in batches of 100
+BATCH_VIDEO_SIZE = 100
+BATCH_IMAGE_SIZE = 300
+
+# Caching datas folder
+CACHE_DATA_FOLDER = "cache_data"
+CACHE_VIDEO_FOLDER = "cache_videos"
+
 DEFAULT_BASS_AUDIO_FILENAME = 'bass_only_audio.mp3'
 DEFAULT_TREBEL_AUDIO_FILENAME = 'trebel_only_audio.mp3'
 DEFAULT_MID_AUDIO_FILENAME = 'mid_only_audio.mp3'
 DEFAULT_HPSS_AUDIO_FILENAME = 'hpss_only_audio.mp3'
-
 
 def check_file_type(file_path):
     """
@@ -52,6 +75,23 @@ def check_file_type(file_path):
     else:
         return 'unknown'
 
+def clean_folder(folder_path):
+    try:
+        if os.path.exists(folder_path):
+            # Iterate over the contents of the folder
+            for filename in os.listdir(folder_path):
+                file_path = os.path.join(folder_path, filename)
+                try:
+                    if os.path.isfile(file_path):
+                        os.unlink(file_path)
+                    elif os.path.isdir(file_path):
+                        shutil.rmtree(file_path)
+                except Exception as e:
+                    print(f"Failed to delete {file_path}. Reason: {e}")
+        else:
+            print(f"The folder '{folder_path}' does not exist.")
+    except Exception as e:
+        print(f"Error cleaning folder '{folder_path}'. Reason: {e}")
 
 # Function to write frames_zoom_data to a JSON file as floats
 def write_frames_zoom_data_as_float(frames_zoom_data, filename):
@@ -114,7 +154,7 @@ def process_batch(args):
     # Create a video clip from the processed batch of frames
     batch_clip = mp.ImageSequenceClip(processed_frames, fps=clip_fps)
     batch_clip_file = os.path.join(batch_folder, f"batch_{start_idx//batch_size}.mp4")
-    batch_clip.write_videofile(batch_clip_file, codec='hevc_nvenc', audio_codec='aac')
+    batch_clip.write_videofile(batch_clip_file, codec='hevc_nvenc', audio_codec='aac', ffmpeg_params=['-pix_fmt', 'yuv420p', '-crf', '29', '-preset', 'slow'])
     
     # Clear the processed frames to free up memory
     del processed_frames
@@ -155,10 +195,10 @@ def parse_arguments():
         parser.add_argument('--mode', choices=['bass', 'treble', 'mid', 'hpss'], help='Audio analysis mode: bass, treble, mid, hpss')
         parser.add_argument('--range', type=int, default=15, help='Window length for smoothing RMS')
         parser.add_argument('--output', type=str, default="output_video.mp4",help='Output video file name')
-        parser.add_argument('--threads', type=int, default=3, help='Number of threads for multiprocessing')
+        parser.add_argument('--threads', type=int, help='Number of threads for multiprocessing')
         parser.add_argument('--domain', type=str, help='Domain for API authentication')
         parser.add_argument('--token', type=str, help='Token for API authentication')
-        parser.add_argument('--effect', choices=['zoom', 'blur', 'brightness', 'rgb'], help='Effect reaction for audio amplitude')
+        parser.add_argument('--effect', choices=['zoom', 'blur', 'brightness', 'rgb'], default="zoom", help='Effect reaction for audio amplitude')
         return parser.parse_args()
     except argparse.ArgumentError as e:
         logging.error(f"Argument parsing error: {e}")
@@ -237,6 +277,29 @@ def analyze_audio_component(y, sr, mode):
     except Exception as e:
         logging.error(f"Error analyzing audio component: {e}")
         return None
+    
+def process_frame_temp(params):
+    try:
+        start_idx, end_idx, image, zoom_factor_function = params
+        batch_frames = []
+
+        for idx in range(start_idx, end_idx):
+            frame = image.copy()  # Copy original image frame
+            time = idx / DEFAULT_FRAME_FPS  # Calculate time in seconds
+            zoom_factor = float(zoom_factor_function(time))
+            resized_frame = apply_zoom_effect_image(frame, zoom_factor)
+            max_width, max_height = image.shape[1], image.shape[0]
+            resized_frame = cv2.resize(resized_frame, (max_width, max_height))  # Resize to original image dimensions
+            resized_frame = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)  # Convert BGR to RGB
+            batch_frames.append(resized_frame)
+
+        # Perform garbage collection
+        gc.collect()
+
+        return batch_frames
+    except Exception as e:
+        logging.error(f"Error processing frames {start_idx} to {end_idx}: {e}")
+        return None
 
 # Function to process a frame with zoom effect
 def process_frame(params):
@@ -249,13 +312,43 @@ def process_frame(params):
         max_width, max_height = image.shape[1], image.shape[0]
         resized_frame = cv2.resize(resized_frame, (max_width, max_height))  # Resize to original image dimensions
         resized_frame = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)  # Convert BGR to RGB
+        
+        # Perform garbage collection
+        gc.collect()
+        
         return resized_frame
     except AssertionError as e:
         logging.error(f"AssertionError processing frame {idx}: {e}")
-        return None
+        cleanup_resources()
+        sys.exit(1)
     except Exception as e:
         logging.error(f"Error processing frame {idx}: {e}")
-        return None
+        cleanup_resources()
+        sys.exit(1)
+
+def create_video_from_frames(frames_folder, output_video, origin_audio_file_path):
+    try:
+        # Get all image files in the frames_folder
+        image_files = [os.path.join(frames_folder, f) for f in os.listdir(frames_folder) if f.endswith('.jpg')]
+        image_files.sort()  # Sort files in numerical order if necessary
+
+        # Load frames into ImageSequenceClip
+        frames = [cv2.cvtColor(cv2.imread(f), cv2.COLOR_BGR2RGB) for f in image_files]
+        video_clip = mp.ImageSequenceClip(frames, fps=DEFAULT_FRAME_FPS)
+
+        # Load audio from original audio file
+        audio_clip = mp.AudioFileClip(origin_audio_file_path)
+
+        # Set audio for the video clip
+        video_clip = video_clip.set_audio(audio_clip)
+
+        # Write the final processed video clip to a file
+        video_clip.write_videofile(output_video, codec='hevc_nvenc', audio_codec='aac', threads=args.threads, ffmpeg_params=['-pix_fmt', 'yuv420p', '-crf', '29', '-preset', 'slow'])
+
+        logging.info(f"Video with zoom effect saved to {output_video}")
+        print(f"Video created from zoomed frames: {output_video}")
+    except Exception as e:
+        logging.error(f"Error creating video from frames: {e}")
     
 def plot_rms_data(rms, smoothed_rms, sr, hop_length):
     try:
@@ -271,9 +364,13 @@ def plot_rms_data(rms, smoothed_rms, sr, hop_length):
         plt.show()
     except Exception as e:
         logging.error(f"Error plotting RMS data: {e}")
-        
-        
-        
+
+
+def cleanup_resources():
+    for process in multiprocessing.active_children():
+        process.terminate()
+        process.join()
+    logging.info("Cleaned up all child processes")
         
 # ------------- START: RMS data for different audio components (bass, treble, mid, and hpss), save the filtered audio to separate files -------------#
 
@@ -328,50 +425,71 @@ def generate_separate_frequency_to_file_audio(origin_file_path, mode):
 
     if mode == 'bass':
         y_filtered = butter_filter(y, cutoff=150.0, sr=sr, filter_type='low')
-        output_audio = DEFAULT_BASS_AUDIO_FILENAME
-        # output_rms = 'rms_bass.json'
+        output_audio = os.path.join(CACHE_DATA_FOLDER, DEFAULT_BASS_AUDIO_FILENAME)
     elif mode == 'treble':
         y_filtered = butter_filter(y, cutoff=4000.0, sr=sr, filter_type='high')
-        output_audio = DEFAULT_TREBEL_AUDIO_FILENAME
-        # output_rms = 'rms_trebel.json'
+        output_audio = os.path.join(CACHE_DATA_FOLDER, DEFAULT_TREBEL_AUDIO_FILENAME)
     elif mode == 'mid':
         y_filtered = butter_filter(y, lowcut=200.0, highcut=4000.0, sr=sr, filter_type='band')
-        output_audio = DEFAULT_MID_AUDIO_FILENAME
-        # output_rms = 'rms_mid.json'
+        output_audio = os.path.join(CACHE_DATA_FOLDER, DEFAULT_MID_AUDIO_FILENAME)
     elif mode == 'hpss':
         y_harmonic, y_percussive = librosa.effects.hpss(y)
         y_filtered = y_harmonic + y_percussive
-        output_audio = DEFAULT_HPSS_AUDIO_FILENAME
-        # output_rms = 'rms_hpss.json'
+        output_audio = os.path.join(CACHE_DATA_FOLDER, DEFAULT_HPSS_AUDIO_FILENAME)
     else:
         raise ValueError(f"Invalid mode: {mode}")
 
     save_audio(y_filtered, sr, output_audio)
     return output_audio
-    # rms = calculate_rms(y_filtered)
-    # save_rms(rms, output_rms)
 
 
 
 # ------------- END: RMS data for different audio components (bass, treble, mid, and hpss), save the filtered audio to separate files -------------#
-        
-
 
 def render_video(args):
     # Handling exceptions when missing or invalid arguments
+    # Clean CACHE_VIDEO_FOLDER && CACHE_DATA_FOLDER
+    clean_folder(CACHE_VIDEO_FOLDER)
+    clean_folder(CACHE_DATA_FOLDER)
     try:
+        if args is None:
+            return
+        
+        print(f"Arguments: {args}")
+        
+        # Check if audio and image paths are provided and valid
+        if not os.path.isfile(args.audio):
+            raise FileNotFoundError(f"Audio file not found: {args.audio}")
+        if not os.path.isfile(args.input):
+            raise FileNotFoundError(f"Input file not found: {args.input}")
+
+        # Authenticate if email and password are provided
+        if args.token:
+            status_code, message = authenticate(args.domain, args.token)
+            if status_code != 200:
+                raise Exception("Authentication failed")
+
+            print(f"Authenticated successfully. Response: {message}")
+
+        logging.info(f"Step 1/2: Process for getting data from audio....")
+        
+        if not os.path.exists(CACHE_DATA_FOLDER):
+            os.makedirs(CACHE_DATA_FOLDER, exist_ok=True)
+        
+        if not os.path.exists(CACHE_VIDEO_FOLDER):
+            os.makedirs(CACHE_VIDEO_FOLDER, exist_ok=True)
+        
         # Load the audio file
-        audio_file_path = args.audio
+        origin_audio_file_path = args.audio
+        
+        # RMS data for different audio components (bass, treble, mid, and hpss)
+        audio_file_path = generate_separate_frequency_to_file_audio(origin_audio_file_path, args.mode)
         y, sr = librosa.load(audio_file_path, sr=None)
 
         # Load video clip
         video_file_path = args.input
         output_video = args.output
         clip = mp.VideoFileClip(video_file_path)
-
-        # Create a subfolder for batch files
-        batch_folder = "batch_videos"
-        os.makedirs(batch_folder, exist_ok=True)
 
         # Get the FPS of the video
         video_fps = clip.fps
@@ -395,10 +513,8 @@ def render_video(args):
 
         # Convert the peak and trough frames to time
         peak_times = librosa.frames_to_time(peaks, sr=sr, hop_length=hop_length)
-        peak_values = smoothed_rms[peaks]
 
         trough_times = librosa.frames_to_time(troughs, sr=sr, hop_length=hop_length)
-        trough_values = smoothed_rms[troughs]
 
         # Group peaks and troughs into alternating peak-trough pairs
         peak_trough_pairs = []
@@ -429,19 +545,20 @@ def render_video(args):
         frames_zoom_data = {}
         for time, marker in peak_trough_pairs:
             frame_index = round(time * video_fps)
-            smallest_zoom_size = 1.05
             calculated_zoom_factor = smoothed_rms[np.argmin(np.abs(librosa.times_like(rms, sr=sr, hop_length=hop_length) - time))]
             if calculated_zoom_factor <= 0:
-                frames_zoom_data[frame_index] = smallest_zoom_size
+                frames_zoom_data[frame_index] = SMALLEST_ZOOM_SIZE
             if calculated_zoom_factor > 0:
-                frames_zoom_data[frame_index] = round((calculated_zoom_factor/3 + smallest_zoom_size), 3)
+                frames_zoom_data[frame_index] = round((calculated_zoom_factor/3 + SMALLEST_ZOOM_SIZE), 3)
 
         # Write frames_zoom_data to file as floats
-        output_filename = f'video_zoom_data_{args.mode}.json'
+        output_filename = os.path.join(CACHE_DATA_FOLDER, f'video_zoom_data_{args.mode}.json')
         write_frames_zoom_data_as_float(frames_zoom_data, output_filename)
 
         # Read frames_zoom_data from file
         frames_zoom_data = read_frames_zoom_data_as_float(output_filename)
+        
+        logging.info(f"Step 2/2: Start to render batches video with zoom effect....")
 
         # Convert keys to integers and values to floats (in case JSON loaded them as strings)
         frames_zoom_data = {int(k): float(v) for k, v in frames_zoom_data.items()}
@@ -451,7 +568,7 @@ def render_video(args):
         zoom_factors = list(frames_zoom_data.values())
 
         # Create an interpolation function
-        interpolation_function = interp1d(frames, zoom_factors, kind='linear', fill_value='extrapolate')
+        interpolation_function = interp1d(frames, zoom_factors, kind='quadratic', fill_value='extrapolate')
 
         # Define the total number of frames in the video
         total_frames = int(clip.fps * clip.duration)
@@ -460,13 +577,10 @@ def render_video(args):
         interpolated_zoom_factors = interpolation_function(np.arange(total_frames))
 
         # Process frames and apply zoom effect in smaller batches using multiprocessing
-        batch_size = 100  # Process frames in batches of 100
-        process_core_cpu = 4
-        batch_indices = [(start_idx, min(start_idx + batch_size, total_frames), video_fps, interpolated_zoom_factors, batch_size, video_file_path, batch_folder) 
-                            for start_idx in range(0, total_frames, batch_size)]
+        batch_indices = [(start_idx, min(start_idx + BATCH_VIDEO_SIZE, total_frames), video_fps, interpolated_zoom_factors, BATCH_VIDEO_SIZE, video_file_path, CACHE_VIDEO_FOLDER) for start_idx in range(0, total_frames, BATCH_VIDEO_SIZE)]
 
         # Use a limited number of processes to avoid overloading the system
-        num_processes = min(process_core_cpu, multiprocessing.cpu_count())  # Adjust the number of processes as needed
+        num_processes = min(args.threads, multiprocessing.cpu_count())  # Adjust the number of processes as needed
         with multiprocessing.Pool(processes=num_processes) as pool:
             batch_clips = pool.map(process_batch, batch_indices)
 
@@ -481,7 +595,7 @@ def render_video(args):
         final_clip = final_clip.set_audio(audio_clip)
 
         # Write the final processed video clip to a file
-        final_clip.write_videofile(output_video, codec='hevc_nvenc', audio_codec='aac')
+        final_clip.write_videofile(output_video, codec='hevc_nvenc', audio_codec='aac', ffmpeg_params=['-pix_fmt', 'yuv420p', '-crf', '29', '-preset', 'slow'])
 
         # Clean up temporary batch video files after the final video is rendered
         for batch_clip_file in batch_clips:
@@ -495,12 +609,11 @@ def render_video(args):
             except Exception as e:
                 print(f"Failed to remove {batch_clip_file}: {e}")
 
-        # Delete the batch video folder
-        try:
-            os.rmdir(batch_folder)
-            print(f"Deleted folder {batch_folder}")
-        except Exception as e:
-            print(f"Failed to delete {batch_folder}: {e}")
+        # Clean CACHE_DATA_FOLDER && CACHE_VIDEO_FOLDER
+        clean_folder(CACHE_VIDEO_FOLDER)
+        clean_folder(CACHE_DATA_FOLDER)
+        
+        logging.info(f"Video with zoom effect saved to {output_video}")
 
     except SystemExit as e:
         if e.code != 0:
@@ -509,6 +622,36 @@ def render_video(args):
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
 
+def render_batch(batch_start, batch_end, total_frames, image, zoom_factor_function, CACHE_VIDEO_FOLDER):
+    try:
+        zoomed_images = []
+        for idx in range(batch_start, batch_end, BATCH_IMAGE_SIZE):
+            batch_frames = process_frame_temp((idx, min(idx + BATCH_IMAGE_SIZE, total_frames), image, zoom_factor_function))
+            zoomed_images.extend(batch_frames)
+
+        # Create a video clip from the zoomed frames
+        batch_clip = mp.ImageSequenceClip(zoomed_images, fps=DEFAULT_FRAME_FPS)
+        batch_clip_file = os.path.join(CACHE_VIDEO_FOLDER, f"batch_{batch_start // BATCH_IMAGE_SIZE}.mp4")
+        batch_clip.write_videofile(
+            batch_clip_file, 
+            codec='hevc_nvenc',
+            audio_codec='aac',
+            ffmpeg_params=['-pix_fmt', 'yuv420p', '-crf', '29', '-preset', 'slow'],
+            verbose=False,
+            logger=None
+        )
+
+        # Clean up
+        del zoomed_images
+        gc.collect()
+        
+        logging.info(f"Completed {batch_start//BATCH_IMAGE_SIZE}/{total_frames//BATCH_IMAGE_SIZE} batches video")
+
+        return batch_clip_file
+
+    except Exception as e:
+        logging.error(f"Error processing batch from {batch_start} to {batch_end}: {e}")
+        return None
 
 def render_image(args):
     try:
@@ -531,7 +674,13 @@ def render_image(args):
 
             print(f"Authenticated successfully. Response: {message}")
 
-        logging.info(f"Step 1/2: Process for getting data from audio....")
+        logging.info(f"Step 1/3: Process for getting data from audio....")
+        
+        if not os.path.exists(CACHE_DATA_FOLDER):
+            os.makedirs(CACHE_DATA_FOLDER)
+        
+        if not os.path.exists(CACHE_VIDEO_FOLDER):
+                os.makedirs(CACHE_VIDEO_FOLDER)
 
         # RMS data for different audio components (bass, treble, mid, and hpss)
         audio_file_path = generate_separate_frequency_to_file_audio(args.audio, args.mode)
@@ -561,9 +710,6 @@ def render_image(args):
 
         # Smooth the RMS values using the Savitzky-Golay filter
         smoothed_rms = savgol_filter(rms, window_length=args.range, polyorder=4)
-        
-        # Visualize Plot RMS and Smoothed RMS
-        # plot_rms_data(rms, smoothed_rms, sr, hop_length)
 
         # Find peaks and troughs in the smoothed RMS values
         peaks, _ = find_peaks(smoothed_rms)
@@ -571,10 +717,8 @@ def render_image(args):
 
         # Convert the peak and trough frames to time
         peak_times = librosa.frames_to_time(peaks, sr=sr, hop_length=hop_length)
-        # peak_values = smoothed_rms[peaks]
 
         trough_times = librosa.frames_to_time(troughs, sr=sr, hop_length=hop_length)
-        # trough_values = smoothed_rms[troughs]
 
         # Group peaks and troughs into alternating peak-trough pairs
         peak_trough_pairs = []
@@ -605,23 +749,20 @@ def render_image(args):
         frames_zoom_data = {}
         for time, marker in peak_trough_pairs:
             calculated_zoom_factor = smoothed_rms[np.argmin(np.abs(librosa.times_like(rms, sr=sr, hop_length=hop_length) - time))]
-            smallest_zoom_size = 1.05
-
             if calculated_zoom_factor <= 0:
-                frames_zoom_data[time] = smallest_zoom_size
+                frames_zoom_data[time] = SMALLEST_ZOOM_SIZE
             if calculated_zoom_factor > 0:
-                frames_zoom_data[time] = round((calculated_zoom_factor/3 + smallest_zoom_size), 3)
+                frames_zoom_data[time] = round((calculated_zoom_factor/3 + SMALLEST_ZOOM_SIZE), 3)
 
         # Write frames_zoom_data to file as floats
-        output_filename = f'frames_zoom_data_{args.mode}.json'
+        output_filename = os.path.join(CACHE_DATA_FOLDER, f'frames_zoom_data_{args.mode}.json')
         write_frames_zoom_data_as_float(frames_zoom_data, output_filename)
-        print("OK")
         logging.info(f"Write file {output_filename}")
 
         # Read frames_zoom_data from file
         frames_zoom_data = read_frames_zoom_data_as_float(output_filename)
-        logging.info(f"Step 2/2: Start to render video with zoom effect....")
-        
+        logging.info(f"Step 2/3: Start to render video with zoom effect....")
+
         # Convert keys to float and values to float (in case JSON loaded them as strings)
         frames_zoom_data = {float(k): float(v) for k, v in frames_zoom_data.items()}
         
@@ -632,44 +773,62 @@ def render_image(args):
         # Calculate total_frames based on audio duration and 30 frames per second
         total_frames = int(librosa.get_duration(y=y, sr=sr) * DEFAULT_FRAME_FPS)
         
+        logging.info(f"Total: {total_frames//BATCH_IMAGE_SIZE} batches video")
         
         # Use multiprocessing to process frames
-        max_width, max_height = image.shape[1], image.shape[0]
         zoom_factor_function = interp1d(frames, zoom_factors, kind='quadratic', fill_value='extrapolate')
         
-        
-        with multiprocessing.Pool(args.threads) as pool:
+        # Create a list to store batch video file paths
+        batch_video_files = []
+        num_processes = min(args.threads, multiprocessing.cpu_count())  # Adjust the number of processes as needed
+
+        # Create a pool of processes
+        with multiprocessing.Pool(processes=num_processes) as pool:
             try:
-                zoomed_images = pool.map(process_frame, [(idx, image, zoom_factor_function) for idx in range(total_frames)])
+                # Map rendering of each batch to the pool
+                results = [pool.apply_async(render_batch, (batch_start, min(batch_start + BATCH_IMAGE_SIZE, total_frames), total_frames, image, zoom_factor_function, CACHE_VIDEO_FOLDER))
+                        for batch_start in range(0, total_frames, BATCH_IMAGE_SIZE)]
+
+                # Collect results
+                for result in results:
+                    batch_clip_file = result.get(timeout=None)  # No timeout; wait indefinitely for each result
+                    if batch_clip_file:
+                        batch_video_files.append(batch_clip_file)
+
             except Exception as e:
                 logging.error(f"Error in multiprocessing: {e}")
-                pool.terminate()  # Terminate pool on exception
-                pool.join()  # Ensure all processes are cleaned up
-            
-        # Remove None frames due to errors
-        zoomed_images = [frame for frame in zoomed_images if frame is not None]
-        
-        # Perform garbage collection
-        gc.collect()
 
-        # Create a video clip from the zoomed frames
-        video_clip = mp.ImageSequenceClip(zoomed_images, fps=DEFAULT_FRAME_FPS)
+        cleanup_resources()
+        # Concatenate all batch clips into a final video
+        final_clip = mp.concatenate_videoclips([mp.VideoFileClip(file) for file in batch_video_files])
 
         # Load audio from original audio file
         audio_clip = mp.AudioFileClip(origin_audio_file_path)
 
         # Set audio for the video clip
-        video_clip = video_clip.set_audio(audio_clip)
+        final_clip = final_clip.set_audio(audio_clip)
+        
+        logging.info(f"Step 3/3: Rendering video final...")
 
         # Write the final processed video clip to a file
-        video_clip.write_videofile(output_video, codec='hevc_nvenc', audio_codec='aac', threads=args.threads, ffmpeg_params=['-pix_fmt', 'yuv420p'])
-
-        logging.info(f"Video with zoom effect saved to {output_video}")
+        final_clip.write_videofile(
+            output_video,
+            codec='hevc_nvenc',
+            audio_codec='aac',
+            ffmpeg_params=['-pix_fmt', 'yuv420p', '-crf', '29', '-preset', 'slow'],
+            logger=None
+        )
         
-        # # Cleanup: delete temporary audio and JSON files
-        # os.remove(audio_filename)
-        # os.remove(json_filename)
-        # logging.info("Temporary files deleted")
+        # Clean up temporary batch video files after the final video is rendered
+        for batch_clip_file in batch_video_files:
+            try:
+                clip = mp.VideoFileClip(batch_clip_file)
+                clip.close()  # Ensure the clip is properly closed
+                os.remove(batch_clip_file)
+            except Exception as e:
+                logging.error(f"Failed to close clip {batch_clip_file}: {e}")
+
+        logging.info(f"Completed. Video with {args.effect} effect saved to {output_video}")
 
     except FileNotFoundError as fe:
         logging.error(fe)
@@ -682,27 +841,40 @@ def render_image(args):
         raise
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
-    finally:
-        # Clean up any remaining resources
-        multiprocessing.active_children()  # Ensure all child processes are terminated
-        
 
 if __name__ == '__main__':
     try:
         multiprocessing.freeze_support()  # For Windows support
-        
+
         args = parse_arguments()
-        
+
         # Check if the provided input file is an audio or a video file
         file_path = args.input
         file_type = check_file_type(file_path)
         
+        # Clean CACHE_DATA_FOLDER && CACHE_VIDEO_FOLDER
+        clean_folder(CACHE_VIDEO_FOLDER)
+        clean_folder(CACHE_DATA_FOLDER)
+
         if file_type == 'video':
             render_video(args)
         elif file_type == 'image':
             render_image(args)
         else:
             raise ValueError(f"Unsupported input file type. Please provide an image or video file.")
+        
+        # Clean CACHE_DATA_FOLDER && CACHE_VIDEO_FOLDER
+        clean_folder(CACHE_VIDEO_FOLDER)
+        clean_folder(CACHE_DATA_FOLDER)
     except Exception as e:
         multiprocessing.active_children()
         print(f"An unexpected error occurred: {e}")
+    except KeyboardInterrupt:
+        logging.info("Main process received KeyboardInterrupt. Terminating child processes...")
+        cleanup_resources()
+        logging.info("All child processes terminated.")
+        sys.exit(1)  # Exit cleanly
+    finally:
+        multiprocessing.active_children()
+        cleanup_resources()
+        sys.exit(1)
