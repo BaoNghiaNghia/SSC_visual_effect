@@ -139,7 +139,7 @@ def apply_zoom_effect_video(frame, zoom_factor, target_size):
             return None
 
 # Function to process a batch of frames
-def process_batch(args):
+def process_batch_video(args):
     start_idx, end_idx, clip_fps, interpolated_zoom_factors, batch_size, video_path, batch_folder = args
     clip = mp.VideoFileClip(video_path)
     processed_frames = []
@@ -156,13 +156,21 @@ def process_batch(args):
     # Create a video clip from the processed batch of frames
     batch_clip = mp.ImageSequenceClip(processed_frames, fps=clip_fps)
     batch_clip_file = os.path.join(batch_folder, f"batch_{start_idx//batch_size}.mp4")
-    batch_clip.write_videofile(batch_clip_file, codec='hevc_nvenc', audio_codec='aac', ffmpeg_params=['-pix_fmt', 'yuv420p', '-crf', '29', '-preset', 'slow'])
+    batch_clip.write_videofile(
+        batch_clip_file,
+        codec='hevc_nvenc',
+        audio_codec='aac',
+        ffmpeg_params=['-pix_fmt', 'yuv420p', '-crf', '29', '-preset', 'slow'],
+        logger=None
+    )
     
     # Clear the processed frames to free up memory
     del processed_frames
     clip.close()  # Ensure the clip is properly closed
     del batch_clip
     gc.collect()  # Explicitly call the garbage collector
+    
+    logging.info(f"Completed {start_idx//batch_size} batches video")
     
     return batch_clip_file
 
@@ -219,7 +227,6 @@ def authenticate(domain, token):
         response = requests.get(domain, headers=headers)
         response.raise_for_status()  # Raise HTTPError for bad response codes
 
-        logging.info(f"Authentication successful with domain {domain}")
         return response.status_code, response.reason
     except ValueError as ve:
         logging.error(f"Authentication failed: {ve}")
@@ -345,7 +352,14 @@ def create_video_from_frames(frames_folder, output_video, origin_audio_file_path
         video_clip = video_clip.set_audio(audio_clip)
 
         # Write the final processed video clip to a file
-        video_clip.write_videofile(output_video, codec='hevc_nvenc', audio_codec='aac', threads=args.threads, ffmpeg_params=['-pix_fmt', 'yuv420p', '-crf', '29', '-preset', 'slow'])
+        video_clip.write_videofile(
+            output_video,
+            codec='hevc_nvenc',
+            audio_codec='aac',
+            threads=args.threads,
+            ffmpeg_params=['-pix_fmt', 'yuv420p', '-crf', '29', '-preset', 'slow'],
+            logger=None
+        )
 
         logging.info(f"Video with zoom effect saved to {output_video}")
         print(f"Video created from zoomed frames: {output_video}")
@@ -373,9 +387,41 @@ def cleanup_resources():
         process.terminate()
         process.join()
     logging.info("Cleaned up all child processes")
-        
-# ------------- START: RMS data for different audio components (bass, treble, mid, and hpss), save the filtered audio to separate files -------------#
 
+
+def render_batch_frames_to_video(batch_start, batch_end, total_frames, image, zoom_factor_function, CACHE_VIDEO_FOLDER):
+    try:
+        zoomed_images = []
+        for idx in range(batch_start, batch_end, BATCH_IMAGE_SIZE):
+            batch_frames = process_frame_temp((idx, min(idx + BATCH_IMAGE_SIZE, total_frames), image, zoom_factor_function))
+            zoomed_images.extend(batch_frames)
+
+        # Create a video clip from the zoomed frames
+        batch_clip = mp.ImageSequenceClip(zoomed_images, fps=DEFAULT_FRAME_FPS)
+        batch_clip_file = os.path.join(CACHE_VIDEO_FOLDER, f"batch_{batch_start // BATCH_IMAGE_SIZE}.mp4")
+        batch_clip.write_videofile(
+            batch_clip_file, 
+            codec='hevc_nvenc',
+            audio_codec='aac',
+            ffmpeg_params=['-pix_fmt', 'yuv420p', '-crf', '29', '-preset', 'slow'],
+            verbose=False,
+            logger=None
+        )
+
+        # Clean up
+        del zoomed_images
+        gc.collect()
+        
+        logging.info(f"Completed {batch_start//BATCH_IMAGE_SIZE}/{total_frames//BATCH_IMAGE_SIZE} batches video")
+
+        return batch_clip_file
+
+    except Exception as e:
+        logging.error(f"Error processing batch from {batch_start} to {batch_end}: {e}")
+        return None
+
+
+# ------------- START: RMS data for different audio components (bass, treble, mid, and hpss), save the filtered audio to separate files -------------#
 
 
 def butter_filter(data, cutoff, sr, filter_type='low', order=5, lowcut=None, highcut=None):
@@ -449,10 +495,8 @@ def generate_separate_frequency_to_file_audio(origin_file_path, mode):
 # ------------- END: RMS data for different audio components (bass, treble, mid, and hpss), save the filtered audio to separate files -------------#
 
 def render_video(args):
-    # Handling exceptions when missing or invalid arguments
-    # Clean CACHE_VIDEO_FOLDER && CACHE_DATA_FOLDER
-    clean_folder(CACHE_VIDEO_FOLDER)
-    clean_folder(CACHE_DATA_FOLDER)
+    start_time = datetime.now()  # Capture the start time
+
     try:
         if args is None:
             return
@@ -471,9 +515,9 @@ def render_video(args):
             if status_code != 200:
                 raise Exception("Authentication failed")
 
-            print(f"Authenticated successfully. Response: {message}")
+            logging.info(f"Authentication successful with domain {args.domain}")
 
-        logging.info(f"Step 1/2: Process for getting data from audio....")
+        logging.info(f"Step 1/3: Process for getting data from audio....")
         
         if not os.path.exists(CACHE_DATA_FOLDER):
             os.makedirs(CACHE_DATA_FOLDER, exist_ok=True)
@@ -560,7 +604,7 @@ def render_video(args):
         # Read frames_zoom_data from file
         frames_zoom_data = read_frames_zoom_data_as_float(output_filename)
         
-        logging.info(f"Step 2/2: Start to render batches video with zoom effect....")
+        logging.info(f"Step 2/3: Start to render batches video with zoom effect....")
 
         # Convert keys to integers and values to floats (in case JSON loaded them as strings)
         frames_zoom_data = {int(k): float(v) for k, v in frames_zoom_data.items()}
@@ -574,6 +618,8 @@ def render_video(args):
 
         # Define the total number of frames in the video
         total_frames = int(clip.fps * clip.duration)
+        
+        logging.info(f"Total: {total_frames//BATCH_VIDEO_SIZE} batches video")
 
         # Generate interpolated zoom factors for each frame
         interpolated_zoom_factors = interpolation_function(np.arange(total_frames))
@@ -584,7 +630,7 @@ def render_video(args):
         # Use a limited number of processes to avoid overloading the system
         num_processes = min(args.threads, multiprocessing.cpu_count())  # Adjust the number of processes as needed
         with multiprocessing.Pool(processes=num_processes) as pool:
-            batch_clips = pool.map(process_batch, batch_indices)
+            batch_clips = pool.map(process_batch_video, batch_indices)
 
         # Combine all batch videos into the final video
         final_clips = [mp.VideoFileClip(f) for f in batch_clips]
@@ -595,9 +641,17 @@ def render_video(args):
 
         # Set audio for the final video clip
         final_clip = final_clip.set_audio(audio_clip)
+        
+        logging.info(f"Step 3/3: Rendering video final...")
 
         # Write the final processed video clip to a file
-        final_clip.write_videofile(output_video, codec='hevc_nvenc', audio_codec='aac', ffmpeg_params=['-pix_fmt', 'yuv420p', '-crf', '29', '-preset', 'slow'])
+        final_clip.write_videofile(
+            output_video,
+            codec='hevc_nvenc',
+            audio_codec='aac',
+            ffmpeg_params=['-pix_fmt', 'yuv420p', '-crf', '29', '-preset', 'slow'],
+            logger=None
+        )
 
         # Clean up temporary batch video files after the final video is rendered
         for batch_clip_file in batch_clips:
@@ -610,12 +664,12 @@ def render_video(args):
                 os.remove(batch_clip_file)
             except Exception as e:
                 print(f"Failed to remove {batch_clip_file}: {e}")
-
-        # Clean CACHE_DATA_FOLDER && CACHE_VIDEO_FOLDER
-        clean_folder(CACHE_VIDEO_FOLDER)
-        clean_folder(CACHE_DATA_FOLDER)
         
-        logging.info(f"Video with zoom effect saved to {output_video}")
+        end_time = datetime.now()  # Capture the end time
+        duration = end_time - start_time  # Calculate the duration
+        duration_in_seconds = duration.total_seconds()  # Convert duration to seconds
+        
+        logging.info(f"Completed with {duration_in_seconds:.1f}s. Video with {args.effect} effect saved to {output_video}")
 
     except SystemExit as e:
         if e.code != 0:
@@ -623,37 +677,6 @@ def render_video(args):
         raise
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
-
-def render_batch(batch_start, batch_end, total_frames, image, zoom_factor_function, CACHE_VIDEO_FOLDER):
-    try:
-        zoomed_images = []
-        for idx in range(batch_start, batch_end, BATCH_IMAGE_SIZE):
-            batch_frames = process_frame_temp((idx, min(idx + BATCH_IMAGE_SIZE, total_frames), image, zoom_factor_function))
-            zoomed_images.extend(batch_frames)
-
-        # Create a video clip from the zoomed frames
-        batch_clip = mp.ImageSequenceClip(zoomed_images, fps=DEFAULT_FRAME_FPS)
-        batch_clip_file = os.path.join(CACHE_VIDEO_FOLDER, f"batch_{batch_start // BATCH_IMAGE_SIZE}.mp4")
-        batch_clip.write_videofile(
-            batch_clip_file, 
-            codec='hevc_nvenc',
-            audio_codec='aac',
-            ffmpeg_params=['-pix_fmt', 'yuv420p', '-crf', '29', '-preset', 'slow'],
-            verbose=False,
-            logger=None
-        )
-
-        # Clean up
-        del zoomed_images
-        gc.collect()
-        
-        logging.info(f"Completed {batch_start//BATCH_IMAGE_SIZE}/{total_frames//BATCH_IMAGE_SIZE} batches video")
-
-        return batch_clip_file
-
-    except Exception as e:
-        logging.error(f"Error processing batch from {batch_start} to {batch_end}: {e}")
-        return None
 
 
 def render_image(args):
@@ -677,7 +700,6 @@ def render_image(args):
             if status_code != 200:
                 raise Exception("Authentication failed")
 
-            print(f"Authenticated successfully. Response: {message}")
 
         logging.info(f"Step 1/3: Process for getting data from audio....")
         
@@ -766,7 +788,7 @@ def render_image(args):
 
         # Read frames_zoom_data from file
         frames_zoom_data = read_frames_zoom_data_as_float(output_filename)
-        logging.info(f"Step 2/3: Start to render video with zoom effect....")
+        logging.info(f"Step 2/3: Start to render batches video with {args.effect} effect....")
 
         # Convert keys to float and values to float (in case JSON loaded them as strings)
         frames_zoom_data = {float(k): float(v) for k, v in frames_zoom_data.items()}
@@ -791,7 +813,7 @@ def render_image(args):
         with multiprocessing.Pool(processes=num_processes) as pool:
             try:
                 # Map rendering of each batch to the pool
-                results = [pool.apply_async(render_batch, (batch_start, min(batch_start + BATCH_IMAGE_SIZE, total_frames), total_frames, image, zoom_factor_function, CACHE_VIDEO_FOLDER))
+                results = [pool.apply_async(render_batch_frames_to_video, (batch_start, min(batch_start + BATCH_IMAGE_SIZE, total_frames), total_frames, image, zoom_factor_function, CACHE_VIDEO_FOLDER))
                         for batch_start in range(0, total_frames, BATCH_IMAGE_SIZE)]
 
                 # Collect results
@@ -836,7 +858,7 @@ def render_image(args):
         end_time = datetime.now()  # Capture the end time
         duration = end_time - start_time  # Calculate the duration
         duration_in_seconds = duration.total_seconds()  # Convert duration to seconds
-        logging.info(f"Completed with {duration_in_seconds:.2f}s. Video with {args.effect} effect saved to {output_video}")
+        logging.info(f"Completed with {duration_in_seconds:.1f}s. Video with {args.effect} effect saved to {output_video}")
 
     except FileNotFoundError as fe:
         logging.error(fe)
