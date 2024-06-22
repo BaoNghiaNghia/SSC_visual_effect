@@ -17,6 +17,8 @@ import multiprocessing
 from pydub import AudioSegment
 import logging
 import threading
+from datetime import datetime, timedelta  # Import datetime and timedelta from datetime module
+
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -653,7 +655,10 @@ def render_batch(batch_start, batch_end, total_frames, image, zoom_factor_functi
         logging.error(f"Error processing batch from {batch_start} to {batch_end}: {e}")
         return None
 
+
 def render_image(args):
+    start_time = datetime.now()  # Capture the start time
+    
     try:
         if args is None:
             return
@@ -827,8 +832,11 @@ def render_image(args):
                 os.remove(batch_clip_file)
             except Exception as e:
                 logging.error(f"Failed to close clip {batch_clip_file}: {e}")
-
-        logging.info(f"Completed. Video with {args.effect} effect saved to {output_video}")
+                
+        end_time = datetime.now()  # Capture the end time
+        duration = end_time - start_time  # Calculate the duration
+        duration_in_seconds = duration.total_seconds()  # Convert duration to seconds
+        logging.info(f"Completed with {duration_in_seconds:.2f}s. Video with {args.effect} effect saved to {output_video}")
 
     except FileNotFoundError as fe:
         logging.error(fe)
@@ -841,6 +849,7 @@ def render_image(args):
         raise
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
+
 
 if __name__ == '__main__':
     try:
