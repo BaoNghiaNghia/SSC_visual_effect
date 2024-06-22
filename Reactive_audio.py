@@ -2,23 +2,21 @@ import gc
 import os
 import sys
 import cv2
-import json
-import shutil
-import mimetypes
-import numpy as np
 import argparse
 import librosa
-import requests
-import moviepy.editor as mp
-from scipy.interpolate import interp1d
-import matplotlib.pyplot as plt
-from scipy.signal import butter, lfilter, find_peaks, savgol_filter
-import multiprocessing
-from pydub import AudioSegment
 import logging
 import threading
-from datetime import datetime, timedelta  # Import datetime and timedelta from datetime module
+import numpy as np
+import multiprocessing
+import moviepy.editor as mp
+from datetime import datetime  # Import datetime and timedelta from datetime module
+import matplotlib.pyplot as plt
+from scipy.interpolate import interp1d
+from scipy.signal import butter, lfilter, find_peaks, savgol_filter
 
+from utils.index import write_frames_zoom_data_as_float, read_frames_zoom_data_as_float, check_file_type, clean_folder, authenticate
+from constants.index import BATCH_IMAGE_SIZE, BATCH_VIDEO_SIZE, CACHE_DATA_FOLDER, CACHE_VIDEO_FOLDER, DEFAULT_FRAME_FPS, SMALLEST_ZOOM_SIZE
+from modules.audio_analyze import generate_separate_frequency_to_file_audio
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -36,85 +34,6 @@ while moviepy_logger.handlers:
 
 # Global stop event
 stop_event = threading.Event()
-
-DEFAULT_FRAME_FPS = 30
-
-SMALLEST_ZOOM_SIZE=1.05
-
-# Process frames in batches of 100
-BATCH_VIDEO_SIZE = 100
-BATCH_IMAGE_SIZE = 300
-
-# Caching datas folder
-CACHE_DATA_FOLDER = "cache_data"
-CACHE_VIDEO_FOLDER = "cache_videos"
-
-DEFAULT_BASS_AUDIO_FILENAME = 'bass_only_audio.mp3'
-DEFAULT_TREBEL_AUDIO_FILENAME = 'trebel_only_audio.mp3'
-DEFAULT_MID_AUDIO_FILENAME = 'mid_only_audio.mp3'
-DEFAULT_HPSS_AUDIO_FILENAME = 'hpss_only_audio.mp3'
-
-def check_file_type(file_path):
-    """
-    Check if the input file is an audio or video file based on its MIME type.
-    
-    Parameters:
-        file_path (str): Path to the file to be checked.
-    
-    Returns:
-        str: 'audio' if the file is an audio file, 'video' if it is a video file, 
-            'unknown' if the file type could not be determined.
-    """
-    mime_type, _ = mimetypes.guess_type(file_path)
-    
-    if mime_type is None:
-        return 'unknown'
-    
-    if mime_type.startswith('image'):
-        return 'image'
-    elif mime_type.startswith('video'):
-        return 'video'
-    else:
-        return 'unknown'
-
-def clean_folder(folder_path):
-    try:
-        if os.path.exists(folder_path):
-            # Iterate over the contents of the folder
-            for filename in os.listdir(folder_path):
-                file_path = os.path.join(folder_path, filename)
-                try:
-                    if os.path.isfile(file_path):
-                        os.unlink(file_path)
-                    elif os.path.isdir(file_path):
-                        shutil.rmtree(file_path)
-                except Exception as e:
-                    print(f"Failed to delete {file_path}. Reason: {e}")
-        else:
-            print(f"The folder '{folder_path}' does not exist.")
-    except Exception as e:
-        print(f"Error cleaning folder '{folder_path}'. Reason: {e}")
-
-# Function to write frames_zoom_data to a JSON file as floats
-def write_frames_zoom_data_as_float(frames_zoom_data, filename):
-    try:
-        with open(filename, 'w') as file:
-            json.dump(frames_zoom_data, file)
-        logging.info(f"Successfully wrote frames_zoom_data to {filename}")
-    except Exception as e:
-        logging.error(f"Error writing frames_zoom_data to {filename}: {e}")
-
-# Function to read frames_zoom_data from a JSON file
-def read_frames_zoom_data_as_float(filename):
-    try:
-        with open(filename, 'r') as file:
-            return json.load(file)
-    except FileNotFoundError:
-        logging.error(f"File not found: {filename}")
-    except Exception as e:
-        logging.error(f"Error reading frames_zoom_data from {filename}: {e}")
-        return None
-
 
 # Function to apply zoom effect to a frame
 def apply_zoom_effect_video(frame, zoom_factor, target_size):
@@ -212,30 +131,6 @@ def parse_arguments():
         return parser.parse_args()
     except argparse.ArgumentError as e:
         logging.error(f"Argument parsing error: {e}")
-        return None
-
-# Function to authenticate with an API
-def authenticate(domain, token):
-    try:
-        if not domain or not token:
-            raise ValueError("Domain, token must be provided for authentication")
-
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization' : 'Bearer ' + token
-        }
-        response = requests.get(domain, headers=headers)
-        response.raise_for_status()  # Raise HTTPError for bad response codes
-
-        return response.status_code, response.reason
-    except ValueError as ve:
-        logging.error(f"Authentication failed: {ve}")
-        return None
-    except requests.exceptions.RequestException as re:
-        logging.error(f"Request error during authentication: {re}")
-        return None
-    except Exception as e:
-        logging.error(f"An unexpected error occurred during authentication: {e}")
         return None
 
 # Function to design a Butterworth lowpass filter
@@ -419,80 +314,6 @@ def render_batch_frames_to_video(batch_start, batch_end, total_frames, image, zo
     except Exception as e:
         logging.error(f"Error processing batch from {batch_start} to {batch_end}: {e}")
         return None
-
-
-# ------------- START: RMS data for different audio components (bass, treble, mid, and hpss), save the filtered audio to separate files -------------#
-
-
-def butter_filter(data, cutoff, sr, filter_type='low', order=5, lowcut=None, highcut=None):
-    nyquist = 0.5 * sr
-    if filter_type == 'low':
-        normal_cutoff = cutoff / nyquist
-        b, a = butter(order, normal_cutoff, btype='low', analog=False)
-    elif filter_type == 'high':
-        normal_cutoff = cutoff / nyquist
-        b, a = butter(order, normal_cutoff, btype='high', analog=False)
-    elif filter_type == 'band':
-        low = lowcut / nyquist
-        high = highcut / nyquist
-        b, a = butter(order, [low, high], btype='band')
-    else:
-        raise ValueError(f"Invalid filter type: {filter_type}")
-    y = lfilter(b, a, data)
-    return y
-
-def save_audio(data, sr, output_path):
-    data_int16 = np.int16(data / np.max(np.abs(data)) * 32767)
-    sample_width = data_int16.dtype.itemsize
-    audio = AudioSegment(
-        data_int16.tobytes(),
-        frame_rate=sr,
-        sample_width=sample_width,
-        channels=1
-    )
-    audio.export(output_path, format="mp3")
-    logging.info(f"Audio saved to {output_path}")
-
-def calculate_rms(data, frame_length=2048, hop_length=512):
-    rms = librosa.feature.rms(y=data, frame_length=frame_length, hop_length=hop_length)[0]
-    return rms
-
-def save_rms(rms, output_path):
-    with open(output_path, 'w') as file:
-        json.dump(rms.tolist(), file)
-    logging.info(f"RMS data saved to {output_path}")
-
-def generate_separate_frequency_to_file_audio(origin_file_path, mode):
-    audio = AudioSegment.from_mp3(origin_file_path)
-    y = np.array(audio.get_array_of_samples(), dtype=np.float32)
-    sr = audio.frame_rate
-
-    if audio.channels == 2:
-        y = y.reshape((-1, 2))
-        y = y.mean(axis=1)
-
-    if mode == 'bass':
-        y_filtered = butter_filter(y, cutoff=150.0, sr=sr, filter_type='low')
-        output_audio = os.path.join(CACHE_DATA_FOLDER, DEFAULT_BASS_AUDIO_FILENAME)
-    elif mode == 'treble':
-        y_filtered = butter_filter(y, cutoff=4000.0, sr=sr, filter_type='high')
-        output_audio = os.path.join(CACHE_DATA_FOLDER, DEFAULT_TREBEL_AUDIO_FILENAME)
-    elif mode == 'mid':
-        y_filtered = butter_filter(y, lowcut=200.0, highcut=4000.0, sr=sr, filter_type='band')
-        output_audio = os.path.join(CACHE_DATA_FOLDER, DEFAULT_MID_AUDIO_FILENAME)
-    elif mode == 'hpss':
-        y_harmonic, y_percussive = librosa.effects.hpss(y)
-        y_filtered = y_harmonic + y_percussive
-        output_audio = os.path.join(CACHE_DATA_FOLDER, DEFAULT_HPSS_AUDIO_FILENAME)
-    else:
-        raise ValueError(f"Invalid mode: {mode}")
-
-    save_audio(y_filtered, sr, output_audio)
-    return output_audio
-
-
-
-# ------------- END: RMS data for different audio components (bass, treble, mid, and hpss), save the filtered audio to separate files -------------#
 
 def render_video(args):
     start_time = datetime.now()  # Capture the start time
