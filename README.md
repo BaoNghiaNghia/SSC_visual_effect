@@ -27,4 +27,4 @@ Reactive_audio.exe --audio "../../../resource/output_circular_bars_audio.mp3" --
 
 # Build Application with PyInstaller
 
-pyinstaller --onefile --icon=favicon.ico Reactive_audio.py
+pyinstaller --icon=favicon.ico Reactive_audio.py
