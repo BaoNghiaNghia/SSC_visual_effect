@@ -17,24 +17,24 @@ Tham số:
 ### Render with video input
 
 ```
-python Reactive_audio.py --audio "../resource/nhac_de_yeu.mp3" --input "../resource/nhac_de_yeu.jpg" --mode bass --range 30 --domain "http://evision-api.sspartner.co/api/v2/userinfo" --token "6329|qeBohgvUP5PRwdqkZluuNQobPQJILh0s9sfyUyYV" --output "../output_image.mp4" --threads 3 --effect zoom
+python Reactive_music.py --audio "../resource/nhac_de_yeu.mp3" --input "../resource/nhac_de_yeu.jpg" --mode bass --range 30 --domain "http://evision-api.sspartner.co/api/v2/userinfo" --token "6329|qeBohgvUP5PRwdqkZluuNQobPQJILh0s9sfyUyYV" --output "../output_image.mp4" --threads 3 --effect zoom
 ```
 
 ```
-Reactive_audio.exe --audio "../../../resource/son_tung.mp3" --input "../../../resource/nhac_de_yeu.jpg" --mode bass --range 30 --domain "http://evision-api.sspartner.co/api/v2/userinfo" --token "6329|qeBohgvUP5PRwdqkZluuNQobPQJILh0s9sfyUyYV" --output "../../../output_image.mp4" --effect zoom --threads 3
+Reactive_music.exe --audio "../../../resource/son_tung.mp3" --input "../../../resource/nhac_de_yeu.jpg" --mode bass --range 30 --domain "http://evision-api.sspartner.co/api/v2/userinfo" --token "6329|qeBohgvUP5PRwdqkZluuNQobPQJILh0s9sfyUyYV" --output "../../../output_image.mp4" --effect zoom --threads 3
 ```
 
 ### Render with image input
 ```
-python Reactive_audio.py --audio "../resource/output_circular_bars_audio.mp3" --input "../resource/output_circular_bars.mp4" --mode bass --range 30 --domain "http://evision-api.sspartner.co/api/v2/userinfo" --token "6329|qeBohgvUP5PRwdqkZluuNQobPQJILh0s9sfyUyYV" --output "../output_image.mp4" --effect zoom --threads 3
+python Reactive_music.py --audio "../resource/output_circular_bars_audio.mp3" --input "../resource/output_circular_bars.mp4" --mode bass --range 30 --domain "http://evision-api.sspartner.co/api/v2/userinfo" --token "6329|qeBohgvUP5PRwdqkZluuNQobPQJILh0s9sfyUyYV" --output "../output_image.mp4" --effect zoom --threads 3
 ```
 
 ```
-Reactive_audio.exe --audio "../../../resource/output_circular_bars_audio.mp3" --input "../../../resource/output_circular_bars.mp4" --mode bass --range 30 --domain "http://evision-api.sspartner.co/api/v2/userinfo" --token "6329|qeBohgvUP5PRwdqkZluuNQobPQJILh0s9sfyUyYV" --output "../../../output_image.mp4" --effect zoom --threads 3
+Reactive_music.exe --audio "../../../resource/output_circular_bars_audio.mp3" --input "../../../resource/output_circular_bars.mp4" --mode bass --range 30 --domain "http://evision-api.sspartner.co/api/v2/userinfo" --token "6329|qeBohgvUP5PRwdqkZluuNQobPQJILh0s9sfyUyYV" --output "../../../output_image.mp4" --effect zoom --threads 3
 ```
 
 # Build Application with PyInstaller
 
 ```
-pyinstaller --icon=favicon.ico Reactive_audio.py
+pyinstaller --icon=favicon.ico Reactive_music.py
 ```

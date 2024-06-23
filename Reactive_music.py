@@ -207,10 +207,41 @@ def render_batch_frames_to_video(batch_start, batch_end, total_frames, image, zo
         batch_clip = mp.ImageSequenceClip(zoomed_images, fps=DEFAULT_FRAME_FPS)
         batch_clip_file = os.path.join(CACHE_VIDEO_FOLDER, f"batch_{batch_start // BATCH_IMAGE_SIZE}.mp4")
         batch_clip.write_videofile(
-            batch_clip_file, 
+            batch_clip_file,
             codec='hevc_nvenc',
-            audio_codec='aac',
+            audio=False,
             ffmpeg_params=['-pix_fmt', 'yuv420p', '-crf', '29', '-preset', 'slow'],
+            verbose=False,
+            logger=None
+        )
+
+        # Clean up
+        del zoomed_images
+        gc.collect()
+        
+        logging.info(f"Completed {batch_start//BATCH_IMAGE_SIZE}/{total_frames//BATCH_IMAGE_SIZE} batches video")
+
+        return batch_clip_file
+
+    except Exception as e:
+        logging.error(f"Error processing batch from {batch_start} to {batch_end}: {e}")
+        return None
+    
+def render_batch_frames_to_video_transparent_background(batch_start, batch_end, total_frames, image, zoom_factor_function, CACHE_VIDEO_FOLDER):
+    try:
+        zoomed_images = []
+        for idx in range(batch_start, batch_end, BATCH_IMAGE_SIZE):
+            batch_frames = process_frame_temp((idx, min(idx + BATCH_IMAGE_SIZE, total_frames), image, zoom_factor_function))
+            zoomed_images.extend(batch_frames)
+
+        # Create a video clip from the zoomed frames
+        batch_clip = mp.ImageSequenceClip(zoomed_images, fps=DEFAULT_FRAME_FPS, with_mask=True)
+        batch_clip_file = os.path.join(CACHE_VIDEO_FOLDER, f"batch_{batch_start // BATCH_IMAGE_SIZE}.mp4")
+        batch_clip.write_videofile(
+            batch_clip_file, 
+            codec='libvpx',
+            audio=False,
+            ffmpeg_params=['-pix_fmt', 'yuva420p', '-crf', '10', '-b:v', '1M'],
             verbose=False,
             logger=None
         )

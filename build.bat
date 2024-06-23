@@ -1,1 +1,1 @@
-pyinstaller --icon=favicon.ico Reactive_audio.py
+pyinstaller --icon=favicon.ico Reactive_music.py

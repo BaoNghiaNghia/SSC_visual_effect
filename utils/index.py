@@ -89,6 +89,7 @@ def authenticate(domain, token):
     except Exception as e:
         logging.error(f"An unexpected error occurred during authentication: {e}")
         return None
+
     
 def cleanup_resources():
     for process in multiprocessing.active_children():
