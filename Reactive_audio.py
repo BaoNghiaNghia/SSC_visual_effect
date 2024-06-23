@@ -5,35 +5,19 @@ import cv2
 import argparse
 import librosa
 import logging
-import threading
 import numpy as np
 import multiprocessing
 import moviepy.editor as mp
-from datetime import datetime  # Import datetime and timedelta from datetime module
-import matplotlib.pyplot as plt
+from datetime import datetime
 from scipy.interpolate import interp1d
-from scipy.signal import butter, lfilter, find_peaks, savgol_filter
+from scipy.signal import find_peaks, savgol_filter
 
-from utils.index import write_frames_zoom_data_as_float, read_frames_zoom_data_as_float, check_file_type, clean_folder, authenticate
+from utils.index import write_frames_zoom_data_as_float, read_frames_zoom_data_as_float, check_file_type, clean_folder, authenticate, cleanup_resources
 from constants.index import BATCH_IMAGE_SIZE, BATCH_VIDEO_SIZE, CACHE_DATA_FOLDER, CACHE_VIDEO_FOLDER, DEFAULT_FRAME_FPS, SMALLEST_ZOOM_SIZE
-from modules.audio_analyze import generate_separate_frequency_to_file_audio
+from modules.audio_analyze import generate_separate_frequency_to_file_audio, analyze_audio_component
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# Get the moviepy logger
-moviepy_logger = logging.getLogger('moviepy')
-
-# Set the logging level to CRITICAL to suppress all logs
-moviepy_logger.setLevel(logging.CRITICAL)
-
-# Remove all handlers from the moviepy logger
-while moviepy_logger.handlers:
-    moviepy_logger.removeHandler(moviepy_logger.handlers[0])
-
-
-# Global stop event
-stop_event = threading.Event()
 
 # Function to apply zoom effect to a frame
 def apply_zoom_effect_video(frame, zoom_factor, target_size):
@@ -132,55 +116,6 @@ def parse_arguments():
     except argparse.ArgumentError as e:
         logging.error(f"Argument parsing error: {e}")
         return None
-
-# Function to design a Butterworth lowpass filter
-def butter_lowpass(cutoff, fs, order=5):
-    try:
-        nyquist = 0.5 * fs
-        normal_cutoff = cutoff / nyquist
-        b, a = butter(order, normal_cutoff, btype='low', analog=False)
-        return b, a
-    except Exception as e:
-        logging.error(f"Error designing Butterworth lowpass filter: {e}")
-        return None, None
-
-# Function to apply a lowpass filter to data
-def apply_lowpass_filter(data, cutoff, fs, order=5):
-    try:
-        b, a = butter_lowpass(cutoff, fs, order=order)
-        if b is None or a is None:
-            return None
-        y = lfilter(b, a, data)
-        return y
-    except Exception as e:
-        logging.error(f"Error applying lowpass filter: {e}")
-        return None
-
-# Function to analyze an audio component based on mode
-def analyze_audio_component(y, sr, mode):
-    try:
-        if mode == 'bass':
-            cutoff_freq = 150
-            y_analysis = apply_lowpass_filter(y, cutoff_freq, sr)
-        elif mode == 'treble':
-            cutoff_freq = 4000
-            y_analysis = librosa.effects.harmonic(y=y)  # Using harmonic component for treble
-        elif mode == 'mid':
-            cutoff_freq = [200, 4000]
-            y_analysis = librosa.effects.bandpass(y, cutoff_freq[0], cutoff_freq[1], sr=sr)
-        elif mode == 'hpss':
-            y_harmonic, y_percussive = librosa.effects.hpss(y)
-            y_analysis = y_harmonic + y_percussive  # Combining both harmonic and percussive components
-        else:
-            raise ValueError(f'Unsupported mode: {mode}')
-
-        return y_analysis
-    except ValueError as ve:
-        logging.error(f"Value error during audio analysis: {ve}")
-        return None
-    except Exception as e:
-        logging.error(f"Error analyzing audio component: {e}")
-        return None
     
 def process_frame_temp(params):
     try:
@@ -260,29 +195,6 @@ def create_video_from_frames(frames_folder, output_video, origin_audio_file_path
         print(f"Video created from zoomed frames: {output_video}")
     except Exception as e:
         logging.error(f"Error creating video from frames: {e}")
-    
-def plot_rms_data(rms, smoothed_rms, sr, hop_length):
-    try:
-        times = librosa.frames_to_time(range(len(rms)), sr=sr, hop_length=hop_length)
-        plt.figure(figsize=(14, 6))
-        plt.plot(times, rms, label='RMS', alpha=0.6)
-        plt.plot(times, smoothed_rms, label='Smoothed RMS', alpha=0.8, linewidth=2)
-        plt.xlabel('Time (s)')
-        plt.ylabel('RMS')
-        plt.title('RMS and Smoothed RMS Over Time')
-        plt.legend()
-        plt.grid(True)
-        plt.show()
-    except Exception as e:
-        logging.error(f"Error plotting RMS data: {e}")
-
-
-def cleanup_resources():
-    for process in multiprocessing.active_children():
-        process.terminate()
-        process.join()
-    logging.info("Cleaned up all child processes")
-
 
 def render_batch_frames_to_video(batch_start, batch_end, total_frames, image, zoom_factor_function, CACHE_VIDEO_FOLDER):
     try:
@@ -322,21 +234,11 @@ def render_video(args):
         if args is None:
             return
         
-        print(f"Arguments: {args}")
-        
         # Check if audio and image paths are provided and valid
         if not os.path.isfile(args.audio):
             raise FileNotFoundError(f"Audio file not found: {args.audio}")
         if not os.path.isfile(args.input):
             raise FileNotFoundError(f"Input file not found: {args.input}")
-
-        # Authenticate if email and password are provided
-        if args.token:
-            status_code, message = authenticate(args.domain, args.token)
-            if status_code != 200:
-                raise Exception("Authentication failed")
-
-            logging.info(f"Authentication successful with domain {args.domain}")
 
         logging.info(f"Step 1/3: Process for getting data from audio....")
         
@@ -507,20 +409,11 @@ def render_image(args):
         if args is None:
             return
         
-        print(f"Arguments: {args}")
-        
         # Check if audio and image paths are provided and valid
         if not os.path.isfile(args.audio):
             raise FileNotFoundError(f"Audio file not found: {args.audio}")
         if not os.path.isfile(args.input):
             raise FileNotFoundError(f"Input file not found: {args.input}")
-
-        # Authenticate if email and password are provided
-        if args.token:
-            status_code, message = authenticate(args.domain, args.token)
-            if status_code != 200:
-                raise Exception("Authentication failed")
-
 
         logging.info(f"Step 1/3: Process for getting data from audio....")
         
@@ -528,7 +421,7 @@ def render_image(args):
             os.makedirs(CACHE_DATA_FOLDER)
         
         if not os.path.exists(CACHE_VIDEO_FOLDER):
-                os.makedirs(CACHE_VIDEO_FOLDER)
+            os.makedirs(CACHE_VIDEO_FOLDER)
 
         # RMS data for different audio components (bass, treble, mid, and hpss)
         audio_file_path = generate_separate_frequency_to_file_audio(args.audio, args.mode)
@@ -699,6 +592,14 @@ if __name__ == '__main__':
         multiprocessing.freeze_support()  # For Windows support
 
         args = parse_arguments()
+        
+        # Authenticate if email and password are provided
+        if args.token:
+            status_code, message = authenticate(args.domain, args.token)
+            if status_code != 200:
+                raise Exception("Authentication failed")
+
+            logging.info(f"Authentication successful with domain {args.domain}")
 
         # Check if the provided input file is an audio or a video file
         file_path = args.input

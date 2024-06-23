@@ -4,6 +4,7 @@ import logging
 import shutil
 import mimetypes
 import requests
+import multiprocessing
 
 # Function to write frames_zoom_data to a JSON file as floats
 def write_frames_zoom_data_as_float(frames_zoom_data, filename):
@@ -88,3 +89,9 @@ def authenticate(domain, token):
     except Exception as e:
         logging.error(f"An unexpected error occurred during authentication: {e}")
         return None
+    
+def cleanup_resources():
+    for process in multiprocessing.active_children():
+        process.terminate()
+        process.join()
+    logging.info("Cleaned up all child processes")

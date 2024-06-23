@@ -78,3 +78,53 @@ def generate_separate_frequency_to_file_audio(origin_file_path, mode):
 
 
 # ------------- END: RMS data for different audio components (bass, treble, mid, and hpss), save the filtered audio to separate files -------------#
+
+
+# Function to design a Butterworth lowpass filter
+def butter_lowpass(cutoff, fs, order=5):
+    try:
+        nyquist = 0.5 * fs
+        normal_cutoff = cutoff / nyquist
+        b, a = butter(order, normal_cutoff, btype='low', analog=False)
+        return b, a
+    except Exception as e:
+        logging.error(f"Error designing Butterworth lowpass filter: {e}")
+        return None, None
+
+# Function to apply a lowpass filter to data
+def apply_lowpass_filter(data, cutoff, fs, order=5):
+    try:
+        b, a = butter_lowpass(cutoff, fs, order=order)
+        if b is None or a is None:
+            return None
+        y = lfilter(b, a, data)
+        return y
+    except Exception as e:
+        logging.error(f"Error applying lowpass filter: {e}")
+        return None
+
+# Function to analyze an audio component based on mode
+def analyze_audio_component(y, sr, mode):
+    try:
+        if mode == 'bass':
+            cutoff_freq = 150
+            y_analysis = apply_lowpass_filter(y, cutoff_freq, sr)
+        elif mode == 'treble':
+            cutoff_freq = 4000
+            y_analysis = librosa.effects.harmonic(y=y)  # Using harmonic component for treble
+        elif mode == 'mid':
+            cutoff_freq = [200, 4000]
+            y_analysis = librosa.effects.bandpass(y, cutoff_freq[0], cutoff_freq[1], sr=sr)
+        elif mode == 'hpss':
+            y_harmonic, y_percussive = librosa.effects.hpss(y)
+            y_analysis = y_harmonic + y_percussive  # Combining both harmonic and percussive components
+        else:
+            raise ValueError(f'Unsupported mode: {mode}')
+
+        return y_analysis
+    except ValueError as ve:
+        logging.error(f"Value error during audio analysis: {ve}")
+        return None
+    except Exception as e:
+        logging.error(f"Error analyzing audio component: {e}")
+        return None
