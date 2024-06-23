@@ -3,6 +3,8 @@ import os
 import logging
 import shutil
 import mimetypes
+from PIL import Image
+import subprocess
 import requests
 import multiprocessing
 
@@ -96,3 +98,9 @@ def cleanup_resources():
         process.terminate()
         process.join()
     logging.info("Cleaned up all child processes")
+
+def fix_image_srgb_profile(image_path):
+    fixed_image_path = image_path.replace('.png', '_fixed.png')
+    command = ['magick', 'convert', image_path, '-strip', fixed_image_path]
+    subprocess.run(command, check=True)
+    return fixed_image_path

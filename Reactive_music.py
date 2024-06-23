@@ -11,9 +11,10 @@ import moviepy.editor as mp
 from datetime import datetime
 from scipy.interpolate import interp1d
 from scipy.signal import find_peaks, savgol_filter
+from concurrent.futures import ThreadPoolExecutor
 
 from utils.index import write_frames_zoom_data_as_float, read_frames_zoom_data_as_float, check_file_type, clean_folder, authenticate, cleanup_resources
-from constants.index import BATCH_IMAGE_SIZE, BATCH_VIDEO_SIZE, CACHE_DATA_FOLDER, CACHE_VIDEO_FOLDER, DEFAULT_FRAME_FPS, SMALLEST_ZOOM_SIZE
+from constants.index import BATCH_IMAGE_SIZE, BATCH_VIDEO_SIZE, CACHE_DATA_FOLDER, CACHE_VIDEO_FOLDER, DEFAULT_FRAME_FPS, SMALLEST_ZOOM_SIZE, FFMPEG_PARAM_RENDER_DEFAULT
 from modules.audio_analyze import generate_separate_frequency_to_file_audio, analyze_audio_component
 
 # Initialize logging
@@ -63,7 +64,7 @@ def process_batch_video(args):
         batch_clip_file,
         codec='hevc_nvenc',
         audio_codec='aac',
-        ffmpeg_params=['-pix_fmt', 'yuv420p', '-crf', '29', '-preset', 'slow'],
+        ffmpeg_params=FFMPEG_PARAM_RENDER_DEFAULT,
         logger=None
     )
     
@@ -104,7 +105,9 @@ def parse_arguments():
     try:
         parser = argparse.ArgumentParser(description='Audio-Image Synchronization')
         parser.add_argument('--audio', type=str, help='Path to the audio file')
-        parser.add_argument('--input', type=str, help='Path to the input file: Image or Video')
+        parser.add_argument('--layer1', type=str, help='Path to the layer 1 file: Image or Video')
+        parser.add_argument('--layer2', type=str, help='Path to the layer 2 file: Image or Video')
+        parser.add_argument('--layer3', type=str, help='Path to the layer 3 file: Image or Video')
         parser.add_argument('--mode', choices=['bass', 'treble', 'mid', 'hpss'], help='Audio analysis mode: bass, treble, mid, hpss')
         parser.add_argument('--range', type=int, default=15, help='Window length for smoothing RMS')
         parser.add_argument('--output', type=str, default="output_video.mp4",help='Output video file name')
@@ -130,6 +133,7 @@ def process_frame_temp(params):
             max_width, max_height = image.shape[1], image.shape[0]
             resized_frame = cv2.resize(resized_frame, (max_width, max_height))  # Resize to original image dimensions
             resized_frame = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)  # Convert BGR to RGB
+
             batch_frames.append(resized_frame)
 
         # Perform garbage collection
@@ -187,7 +191,7 @@ def create_video_from_frames(frames_folder, output_video, origin_audio_file_path
             codec='hevc_nvenc',
             audio_codec='aac',
             threads=args.threads,
-            ffmpeg_params=['-pix_fmt', 'yuv420p', '-crf', '29', '-preset', 'slow'],
+            ffmpeg_params=FFMPEG_PARAM_RENDER_DEFAULT,
             logger=None
         )
 
@@ -197,11 +201,17 @@ def create_video_from_frames(frames_folder, output_video, origin_audio_file_path
         logging.error(f"Error creating video from frames: {e}")
 
 def render_batch_frames_to_video(batch_start, batch_end, total_frames, image, zoom_factor_function, CACHE_VIDEO_FOLDER):
-    try:
+    try:            
         zoomed_images = []
-        for idx in range(batch_start, batch_end, BATCH_IMAGE_SIZE):
-            batch_frames = process_frame_temp((idx, min(idx + BATCH_IMAGE_SIZE, total_frames), image, zoom_factor_function))
-            zoomed_images.extend(batch_frames)
+        with ThreadPoolExecutor() as executor:
+            futures = []
+            for idx in range(batch_start, batch_end, BATCH_IMAGE_SIZE):
+                futures.append(executor.submit(process_frame_temp, (idx, min(idx + BATCH_IMAGE_SIZE, total_frames), image, zoom_factor_function)))
+
+            for future in futures:
+                result = future.result()
+                if result:
+                    zoomed_images.extend(result)
 
         # Create a video clip from the zoomed frames
         batch_clip = mp.ImageSequenceClip(zoomed_images, fps=DEFAULT_FRAME_FPS)
@@ -210,7 +220,7 @@ def render_batch_frames_to_video(batch_start, batch_end, total_frames, image, zo
             batch_clip_file,
             codec='hevc_nvenc',
             audio=False,
-            ffmpeg_params=['-pix_fmt', 'yuv420p', '-crf', '29', '-preset', 'slow'],
+            ffmpeg_params=FFMPEG_PARAM_RENDER_DEFAULT,
             verbose=False,
             logger=None
         )
@@ -222,37 +232,6 @@ def render_batch_frames_to_video(batch_start, batch_end, total_frames, image, zo
         current_file = len([name for name in os.listdir(CACHE_VIDEO_FOLDER) if os.path.isfile(os.path.join(CACHE_VIDEO_FOLDER, name))])
         
         logging.info(f"Completed {current_file}/{total_frames//BATCH_IMAGE_SIZE + 1} batches video")
-
-        return batch_clip_file
-
-    except Exception as e:
-        logging.error(f"Error processing batch from {batch_start} to {batch_end}: {e}")
-        return None
-    
-def render_batch_frames_to_video_transparent_background(batch_start, batch_end, total_frames, image, zoom_factor_function, CACHE_VIDEO_FOLDER):
-    try:
-        zoomed_images = []
-        for idx in range(batch_start, batch_end, BATCH_IMAGE_SIZE):
-            batch_frames = process_frame_temp((idx, min(idx + BATCH_IMAGE_SIZE, total_frames), image, zoom_factor_function))
-            zoomed_images.extend(batch_frames)
-
-        # Create a video clip from the zoomed frames
-        batch_clip = mp.ImageSequenceClip(zoomed_images, fps=DEFAULT_FRAME_FPS, with_mask=True)
-        batch_clip_file = os.path.join(CACHE_VIDEO_FOLDER, f"batch_{batch_start // BATCH_IMAGE_SIZE}.mp4")
-        batch_clip.write_videofile(
-            batch_clip_file, 
-            codec='libvpx',
-            audio=False,
-            ffmpeg_params=['-pix_fmt', 'yuva420p', '-crf', '10', '-b:v', '1M'],
-            verbose=False,
-            logger=None
-        )
-
-        # Clean up
-        del zoomed_images
-        gc.collect()
-        
-        logging.info(f"Completed {batch_start//BATCH_IMAGE_SIZE + 1}/{total_frames//BATCH_IMAGE_SIZE + 1} batches video")
 
         return batch_clip_file
 
@@ -274,7 +253,7 @@ def render_video(args):
         y, sr = librosa.load(audio_file_path, sr=None)
 
         # Load video clip
-        video_file_path = args.input
+        video_file_path = args.layer1
         output_video = args.output
         clip = mp.VideoFileClip(video_file_path)
 
@@ -390,7 +369,7 @@ def render_video(args):
             output_video,
             codec='hevc_nvenc',
             audio_codec='aac',
-            ffmpeg_params=['-pix_fmt', 'yuv420p', '-crf', '29', '-preset', 'slow'],
+            ffmpeg_params=FFMPEG_PARAM_RENDER_DEFAULT,
             logger=None
         )
 
@@ -436,11 +415,11 @@ def render_image(args):
             raise ValueError(f"Error loading audio file: {args.audio}")
 
         # Load the image file
-        image_file_path = args.input
+        image_file_path = args.layer1
         output_video = args.output
         image = cv2.imread(image_file_path, cv2.IMREAD_COLOR)
         if image is None:
-            raise ValueError(f"Error loading image file: {args.input}")
+            raise ValueError(f"Error loading image file: {args.layer1}")
 
         # Frame length and hop length
         frame_length = 2048
@@ -461,7 +440,6 @@ def render_image(args):
 
         # Convert the peak and trough frames to time
         peak_times = librosa.frames_to_time(peaks, sr=sr, hop_length=hop_length)
-
         trough_times = librosa.frames_to_time(troughs, sr=sr, hop_length=hop_length)
 
         # Group peaks and troughs into alternating peak-trough pairs
@@ -530,8 +508,7 @@ def render_image(args):
         with multiprocessing.Pool(processes=num_processes) as pool:
             try:
                 # Map rendering of each batch to the pool
-                results = [pool.apply_async(render_batch_frames_to_video, (batch_start, min(batch_start + BATCH_IMAGE_SIZE, total_frames), total_frames, image, zoom_factor_function, CACHE_VIDEO_FOLDER))
-                        for batch_start in range(0, total_frames, BATCH_IMAGE_SIZE)]
+                results = [pool.apply_async(render_batch_frames_to_video, (batch_start, min(batch_start + BATCH_IMAGE_SIZE, total_frames), total_frames, image, zoom_factor_function, CACHE_VIDEO_FOLDER)) for batch_start in range(0, total_frames, BATCH_IMAGE_SIZE)]
 
                 # Collect results
                 for result in results:
@@ -559,7 +536,7 @@ def render_image(args):
             output_video,
             codec='hevc_nvenc',
             audio_codec='aac',
-            ffmpeg_params=['-pix_fmt', 'yuv420p', '-crf', '29', '-preset', 'slow'],
+            ffmpeg_params=FFMPEG_PARAM_RENDER_DEFAULT,
             logger=None
         )
         
@@ -590,6 +567,7 @@ def render_image(args):
         print(f"An unexpected error occurred: {e}")
 
 
+
 if __name__ == '__main__':
     try:
         multiprocessing.freeze_support()  # For Windows support
@@ -599,8 +577,8 @@ if __name__ == '__main__':
         # Check if audio and image paths are provided and valid
         if not os.path.isfile(args.audio):
             raise FileNotFoundError(f"Audio file not found: {args.audio}")
-        if not os.path.isfile(args.input):
-            raise FileNotFoundError(f"Input file not found: {args.input}")
+        if not os.path.isfile(args.layer1):
+            raise FileNotFoundError(f"Input file not found: {args.layer1}")
         
         if not os.path.exists(CACHE_DATA_FOLDER):
             os.makedirs(CACHE_DATA_FOLDER, exist_ok=True)
@@ -617,7 +595,7 @@ if __name__ == '__main__':
             logging.info(f"Authentication successful with domain {args.domain}")
 
         # Check if the provided input file is an audio or a video file
-        file_path = args.input
+        file_path = args.layer1
         file_type = check_file_type(file_path)
         
         # Clean CACHE_DATA_FOLDER && CACHE_VIDEO_FOLDER

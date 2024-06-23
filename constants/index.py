@@ -14,3 +14,5 @@ DEFAULT_BASS_AUDIO_FILENAME = 'bass_only_audio.mp3'
 DEFAULT_TREBEL_AUDIO_FILENAME = 'trebel_only_audio.mp3'
 DEFAULT_MID_AUDIO_FILENAME = 'mid_only_audio.mp3'
 DEFAULT_HPSS_AUDIO_FILENAME = 'hpss_only_audio.mp3'
+
+FFMPEG_PARAM_RENDER_DEFAULT = ['-pix_fmt', 'yuv420p', '-crf', '29', '-preset', 'slow']
