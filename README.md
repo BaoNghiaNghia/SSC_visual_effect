@@ -1,6 +1,7 @@
 # SSC_visual_effect
 
 Tham số:
+```
   --audio  Đường dẫn file audio, định dạng mp3.
   --input  Đường dẫn file hình ảnh background.
   --mode  Loại dữ liệu RMS, hình ảnh sẽ nhảy theo dạng sóng. Gồm ['bass', 'treble', 'mid', 'hpss']
@@ -10,6 +11,7 @@ Tham số:
   --threads Số luồng chạy trên CPU, mặc định là 3 luồng
   --output Đường dẫn file ouput, mặc định là output_video.mp4
   --effect Hiệu ứng hình ảnh theo sóng nhạc. Gồm ['zoom', 'blur', 'brightness', 'rgb']
+```
 
 # Sample command
 ### Render with video input
