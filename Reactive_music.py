@@ -219,7 +219,9 @@ def render_batch_frames_to_video(batch_start, batch_end, total_frames, image, zo
         del zoomed_images
         gc.collect()
         
-        logging.info(f"Completed {batch_start//BATCH_IMAGE_SIZE}/{total_frames//BATCH_IMAGE_SIZE} batches video")
+        current_file = len([name for name in os.listdir(CACHE_VIDEO_FOLDER) if os.path.isfile(os.path.join(CACHE_VIDEO_FOLDER, name))])
+        
+        logging.info(f"Completed {current_file}/{total_frames//BATCH_IMAGE_SIZE + 1} batches video")
 
         return batch_clip_file
 
@@ -250,7 +252,7 @@ def render_batch_frames_to_video_transparent_background(batch_start, batch_end, 
         del zoomed_images
         gc.collect()
         
-        logging.info(f"Completed {batch_start//BATCH_IMAGE_SIZE}/{total_frames//BATCH_IMAGE_SIZE} batches video")
+        logging.info(f"Completed {batch_start//BATCH_IMAGE_SIZE + 1}/{total_frames//BATCH_IMAGE_SIZE + 1} batches video")
 
         return batch_clip_file
 
@@ -262,22 +264,7 @@ def render_video(args):
     start_time = datetime.now()  # Capture the start time
 
     try:
-        if args is None:
-            return
-        
-        # Check if audio and image paths are provided and valid
-        if not os.path.isfile(args.audio):
-            raise FileNotFoundError(f"Audio file not found: {args.audio}")
-        if not os.path.isfile(args.input):
-            raise FileNotFoundError(f"Input file not found: {args.input}")
-
         logging.info(f"Step 1/3: Process for getting data from audio....")
-        
-        if not os.path.exists(CACHE_DATA_FOLDER):
-            os.makedirs(CACHE_DATA_FOLDER, exist_ok=True)
-        
-        if not os.path.exists(CACHE_VIDEO_FOLDER):
-            os.makedirs(CACHE_VIDEO_FOLDER, exist_ok=True)
         
         # Load the audio file
         origin_audio_file_path = args.audio
@@ -372,8 +359,8 @@ def render_video(args):
 
         # Define the total number of frames in the video
         total_frames = int(clip.fps * clip.duration)
-        
-        logging.info(f"Total: {total_frames//BATCH_VIDEO_SIZE} batches video")
+
+        logging.info(f"Total: {total_frames//BATCH_VIDEO_SIZE + 1} batches video")
 
         # Generate interpolated zoom factors for each frame
         interpolated_zoom_factors = interpolation_function(np.arange(total_frames))
@@ -437,22 +424,7 @@ def render_image(args):
     start_time = datetime.now()  # Capture the start time
     
     try:
-        if args is None:
-            return
-        
-        # Check if audio and image paths are provided and valid
-        if not os.path.isfile(args.audio):
-            raise FileNotFoundError(f"Audio file not found: {args.audio}")
-        if not os.path.isfile(args.input):
-            raise FileNotFoundError(f"Input file not found: {args.input}")
-
         logging.info(f"Step 1/3: Process for getting data from audio....")
-        
-        if not os.path.exists(CACHE_DATA_FOLDER):
-            os.makedirs(CACHE_DATA_FOLDER)
-        
-        if not os.path.exists(CACHE_VIDEO_FOLDER):
-            os.makedirs(CACHE_VIDEO_FOLDER)
 
         # RMS data for different audio components (bass, treble, mid, and hpss)
         audio_file_path = generate_separate_frequency_to_file_audio(args.audio, args.mode)
@@ -545,7 +517,7 @@ def render_image(args):
         # Calculate total_frames based on audio duration and 30 frames per second
         total_frames = int(librosa.get_duration(y=y, sr=sr) * DEFAULT_FRAME_FPS)
         
-        logging.info(f"Total: {total_frames//BATCH_IMAGE_SIZE} batches video")
+        logging.info(f"Total: {total_frames//BATCH_IMAGE_SIZE + 1} batches video")
         
         # Use multiprocessing to process frames
         zoom_factor_function = interp1d(frames, zoom_factors, kind='quadratic', fill_value='extrapolate')
@@ -624,6 +596,18 @@ if __name__ == '__main__':
 
         args = parse_arguments()
         
+        # Check if audio and image paths are provided and valid
+        if not os.path.isfile(args.audio):
+            raise FileNotFoundError(f"Audio file not found: {args.audio}")
+        if not os.path.isfile(args.input):
+            raise FileNotFoundError(f"Input file not found: {args.input}")
+        
+        if not os.path.exists(CACHE_DATA_FOLDER):
+            os.makedirs(CACHE_DATA_FOLDER, exist_ok=True)
+        
+        if not os.path.exists(CACHE_VIDEO_FOLDER):
+            os.makedirs(CACHE_VIDEO_FOLDER, exist_ok=True)
+        
         # Authenticate if email and password are provided
         if args.token:
             status_code, message = authenticate(args.domain, args.token)
@@ -650,6 +634,7 @@ if __name__ == '__main__':
         # Clean CACHE_DATA_FOLDER && CACHE_VIDEO_FOLDER
         clean_folder(CACHE_VIDEO_FOLDER)
         clean_folder(CACHE_DATA_FOLDER)
+
     except Exception as e:
         multiprocessing.active_children()
         print(f"An unexpected error occurred: {e}")

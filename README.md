@@ -14,7 +14,7 @@ Tham số:
 ```
 
 # Sample command
-### Render with video input
+### Render with image input
 
 ```
 python Reactive_music.py --audio "../resource/nhac_de_yeu.mp3" --input "../resource/nhac_de_yeu.jpg" --mode bass --range 30 --domain "http://evision-api.sspartner.co/api/v2/userinfo" --token "6329|qeBohgvUP5PRwdqkZluuNQobPQJILh0s9sfyUyYV" --output "../output_image.mp4" --threads 3 --effect zoom
@@ -24,7 +24,7 @@ python Reactive_music.py --audio "../resource/nhac_de_yeu.mp3" --input "../resou
 Reactive_music.exe --audio "../../../resource/son_tung.mp3" --input "../../../resource/nhac_de_yeu.jpg" --mode bass --range 30 --domain "http://evision-api.sspartner.co/api/v2/userinfo" --token "6329|qeBohgvUP5PRwdqkZluuNQobPQJILh0s9sfyUyYV" --output "../../../output_image.mp4" --effect zoom --threads 3
 ```
 
-### Render with image input
+### Render with video input
 ```
 python Reactive_music.py --audio "../resource/output_circular_bars_audio.mp3" --input "../resource/output_circular_bars.mp4" --mode bass --range 30 --domain "http://evision-api.sspartner.co/api/v2/userinfo" --token "6329|qeBohgvUP5PRwdqkZluuNQobPQJILh0s9sfyUyYV" --output "../output_image.mp4" --effect zoom --threads 3
 ```
